@@ -1,17 +1,17 @@
-#!/usr/bin/env bash
+#!/opt/homebrew/bin/bash
 set -Eeuo pipefail
 
 show_help() {
   cat <<'EOF'
 Usage:
-  ./ytdown.sh -audio      links.txt [output_dir] [prefix] [parallel]
-  ./ytdown.sh -video      links.txt [output_dir] [prefix] [parallel]
-  ./ytdown.sh -audiovideo links.txt [output_dir] [prefix] [parallel]
+  ./ytaudio.sh -audio      links.txt [output_dir] [prefix] [parallel]
+  ./ytaudio.sh -video      links.txt [output_dir] [prefix] [parallel]
+  ./ytaudio.sh -audiovideo links.txt [output_dir] [prefix] [parallel]
 
 Examples:
-  ./ytdown.sh -audio ytlinks.txt
-  ./ytdown.sh -video ytlinks.txt "$HOME/Movies/KKS" "KKS" 3
-  ./ytdown.sh -audiovideo ytlinks.txt "$HOME/Media/KKS" "KKS" 4
+  ./ytaudio.sh -audio ytlinks.txt
+  ./ytaudio.sh -video ytlinks.txt "$HOME/Movies/KKS" "KKS" 3
+  ./ytaudio.sh -audiovideo ytlinks.txt "$HOME/Media/KKS" "KKS" 4
 EOF
 }
 
@@ -52,7 +52,7 @@ for cmd in yt-dlp ffmpeg ffprobe python3; do
 done
 
 if ! [[ "$PARALLEL" =~ ^[0-9]+$ ]] || [[ "$PARALLEL" -lt 1 ]]; then
-  echo "Parallel must be a positive number"
+  echo "Parallel must be a positive integer"
   exit 1
 fi
 
@@ -65,10 +65,12 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 
 URLS_FILE="$TMP_DIR/urls.txt"
 COUNTER_FILE="$TMP_DIR/counter.txt"
-LOCK_DIR="$TMP_DIR/lockdir"
+LOCK_DIR="$TMP_DIR/counter.lock"
+RUNNER_FILE="$TMP_DIR/runner.sh"
 
 AUDIO_ARCHIVE="$OUTPUT_DIR/.downloaded_audio.txt"
 VIDEO_ARCHIVE="$OUTPUT_DIR/.downloaded_video.txt"
+CSV_FILE="$OUTPUT_DIR/download_report.csv"
 
 grep -E 'https?://' "$INPUT_FILE" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | awk 'NF' > "$URLS_FILE"
 
@@ -81,7 +83,11 @@ fi
 echo 0 > "$COUNTER_FILE"
 touch "$AUDIO_ARCHIVE" "$VIDEO_ARCHIVE"
 
-build_filename() {
+if [[ ! -f "$CSV_FILE" ]]; then
+  printf 'recording_date,title,location,channel_name,original_link,status\n' > "$CSV_FILE"
+fi
+
+build_metadata() {
   python3 - "$1" "$2" <<'PY'
 import json, sys, re, unicodedata
 from datetime import datetime
@@ -89,22 +95,6 @@ from datetime import datetime
 raw = sys.argv[1]
 prefix = sys.argv[2].strip()
 data = json.loads(raw)
-
-def slugify(s):
-    s = (s or "").strip()
-    s = unicodedata.normalize("NFKD", s)
-    s = s.encode("ascii", "ignore").decode("ascii")
-    s = s.replace("&", " and ")
-    s = re.sub(r"['’`]", "", s)
-    s = re.sub(r"[^A-Za-z0-9]+", "-", s)
-    s = re.sub(r"-{2,}", "-", s).strip("-")
-    return s or "untitled"
-
-title_raw = data.get("title") or ""
-title = slugify(title_raw)
-location = slugify(data.get("location") or "")
-
-# --- DATE EXTRACTION (STRICT) ---
 
 months = {
     "jan":1,"january":1,
@@ -121,49 +111,92 @@ months = {
     "dec":12,"december":12,
 }
 
-def extract_date(text):
-    text = text.lower()
+def slugify(s):
+    s = (s or "").strip()
+    s = unicodedata.normalize("NFKD", s)
+    s = s.encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r"[\[\]\(\)\|]", "-", s)
+    s = re.sub(r"[.,:;]", "-", s)
+    s = re.sub(r"['’`]", "", s)
+    s = re.sub(r"[^A-Za-z0-9]+", "-", s)
+    s = re.sub(r"-{2,}", "-", s)
+    s = s.strip("-")
+    return s or "untitled"
 
-    # 1. ISO format YYYY-MM-DD
+def extract_date(text):
+    text = (text or "").lower()
+
     m = re.search(r'\b(20\d{2})-(\d{2})-(\d{2})\b', text)
     if m:
         return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
 
-    # 2. Formats like "10th Dec 2016" or "10 Dec 2016" or "23 November 2019"
     m = re.search(r'\b(\d{1,2})(st|nd|rd|th)?\s+([a-zA-Z]+)\s+(20\d{2})\b', text)
     if m:
         day = int(m.group(1))
         month_str = m.group(3).lower()
         year = int(m.group(4))
-
         month = months.get(month_str[:3]) or months.get(month_str)
         if month:
             try:
                 dt = datetime(year, month, day)
                 return dt.strftime("%Y-%m-%d")
-            except:
+            except Exception:
                 pass
 
-    return None
+    return ""
 
-date_part = extract_date(title_raw)
-
-# --- BUILD FILENAME ---
+title_raw = (data.get("title") or "").strip()
+location_raw = (data.get("location") or "").strip()
+channel_raw = (data.get("channel") or data.get("uploader") or "").strip()
+recording_date = extract_date(title_raw)
 
 parts = []
-
-if date_part:
-    parts.append(date_part)
-
+if recording_date:
+    parts.append(recording_date)
 if prefix:
     parts.append(slugify(prefix))
+parts.append(slugify(title_raw))
+if location_raw:
+    parts.append(slugify(location_raw))
 
-parts.append(title)
+basename = "_".join([p for p in parts if p])
 
-if location:
-    parts.append(location)
+print("\t".join([
+    basename,
+    recording_date,
+    title_raw.replace("\t", " ").replace("\n", " "),
+    location_raw.replace("\t", " ").replace("\n", " "),
+    channel_raw.replace("\t", " ").replace("\n", " "),
+]))
+PY
+}
 
-print("_".join([p for p in parts if p]))
+append_csv_row() {
+  local recording_date="$1"
+  local title="$2"
+  local location="$3"
+  local channel_name="$4"
+  local original_link="$5"
+  local status="$6"
+
+  python3 - "$CSV_FILE" "$recording_date" "$title" "$location" "$channel_name" "$original_link" "$status" <<'PY'
+import csv, sys, os, time
+
+csv_file, recording_date, title, location, channel_name, original_link, status = sys.argv[1:]
+lock_dir = csv_file + ".lock"
+
+while True:
+    try:
+        os.mkdir(lock_dir)
+        break
+    except FileExistsError:
+        time.sleep(0.05)
+
+try:
+    with open(csv_file, "a", newline="", encoding="utf-8") as f:
+        csv.writer(f).writerow([recording_date, title, location, channel_name, original_link, status])
+finally:
+    os.rmdir(lock_dir)
 PY
 }
 
@@ -197,6 +230,7 @@ download_audio() {
       --audio-quality 0 \
       --embed-metadata \
       --embed-thumbnail \
+      --write-thumbnail \
       --convert-thumbnails jpg \
       --continue \
       --no-overwrites \
@@ -211,12 +245,15 @@ download_audio() {
   echo "  DONE audio: $target"
   return 0
 }
-
 download_video() {
   local url="$1"
   local base="$2"
 
-  # Download best video+audio, merge if needed, prefer mp4 output
+  if compgen -G "$OUTPUT_DIR/video/$base.*" > /dev/null; then
+    echo "  SKIP video: already exists"
+    return 0
+  fi
+
   if ! yt-dlp \
       -f "bv*+ba/b" \
       --merge-output-format mp4 \
@@ -233,7 +270,7 @@ download_video() {
     return 1
   fi
 
-  echo "  DONE video: $OUTPUT_DIR/video/$base.mp4 (or source extension if merge not needed)"
+  echo "  DONE video: $OUTPUT_DIR/video/$base.mp4"
   return 0
 }
 
@@ -248,31 +285,60 @@ process_url() {
   if ! meta_json="$(yt-dlp --dump-single-json --skip-download --no-warnings "$url" 2>/dev/null)"; then
     echo "  ERROR: metadata failed"
     echo "  LINK: $url"
+    append_csv_row "" "" "" "" "$url" "failed"
+    echo
     return 0
   fi
 
-  local base
-  base="$(build_filename "$meta_json" "$PREFIX")"
+  local meta_line
+  meta_line="$(build_metadata "$meta_json" "$PREFIX")"
+
+  local base recording_date raw_title raw_location raw_channel
+  IFS=$'\t' read -r base recording_date raw_title raw_location raw_channel <<< "$meta_line"
 
   case "$MODE" in
     -audio)
-      download_audio "$url" "$base" || true
+      if download_audio "$url" "$base"; then
+        append_csv_row "$recording_date" "$raw_title" "$raw_location" "$raw_channel" "$url" "completed"
+      else
+        append_csv_row "$recording_date" "$raw_title" "$raw_location" "$raw_channel" "$url" "failed"
+      fi
       ;;
     -video)
-      download_video "$url" "$base" || true
+      if download_video "$url" "$base"; then
+        append_csv_row "$recording_date" "$raw_title" "$raw_location" "$raw_channel" "$url" "completed"
+      else
+        append_csv_row "$recording_date" "$raw_title" "$raw_location" "$raw_channel" "$url" "failed"
+      fi
       ;;
     -audiovideo)
-      download_audio "$url" "$base" || true
-      download_video "$url" "$base" || true
+      local ok_audio=1
+      local ok_video=1
+
+      download_audio "$url" "$base" || ok_audio=0
+      download_video "$url" "$base" || ok_video=0
+
+      if [[ "$ok_audio" -eq 1 && "$ok_video" -eq 1 ]]; then
+        append_csv_row "$recording_date" "$raw_title" "$raw_location" "$raw_channel" "$url" "completed"
+      else
+        append_csv_row "$recording_date" "$raw_title" "$raw_location" "$raw_channel" "$url" "failed"
+      fi
       ;;
   esac
 
   echo
 }
 
-export MODE INPUT_FILE OUTPUT_DIR PREFIX PARALLEL TOTAL
-export AUDIO_ARCHIVE VIDEO_ARCHIVE TMP_DIR COUNTER_FILE LOCK_DIR
-export -f build_filename reserve_index download_audio download_video process_url
+export MODE OUTPUT_DIR PREFIX TOTAL
+export AUDIO_ARCHIVE VIDEO_ARCHIVE CSV_FILE COUNTER_FILE LOCK_DIR
+export -f build_metadata append_csv_row reserve_index download_audio download_video process_url
+
+cat > "$RUNNER_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+process_url "$1"
+EOF
+chmod +x "$RUNNER_FILE"
 
 echo "Mode       : $MODE"
 echo "Input file : $INPUT_FILE"
@@ -280,8 +346,12 @@ echo "Output dir : $OUTPUT_DIR"
 echo "Prefix     : $PREFIX"
 echo "Parallel   : $PARALLEL"
 echo "Total URLs : $TOTAL"
+echo "CSV file   : $CSV_FILE"
 echo
 
-xargs -P "$PARALLEL" -I {} bash -c 'process_url "$@"' _ {} < "$URLS_FILE"
+xargs -P "$PARALLEL" -I {} "$BASH" "$RUNNER_FILE" "{}" < "$URLS_FILE"
 
+echo
 echo "Finished."
+echo "CSV report: $CSV_FILE"
+maced@Uddhavas-MacBook-Pro youtube %
