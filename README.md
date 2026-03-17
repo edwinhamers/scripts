@@ -7,6 +7,8 @@ A powerful macOS-friendly batch downloader for YouTube content using `yt-dlp` an
 This script supports:
 - Audio download (MP3)
 - Video download (best quality, merged to MP4)
+- Thumbnail download
+- Output CSV with completed files
 - Parallel downloads
 - Smart skipping of already downloaded content
 - Clean, consistent filenames
@@ -54,7 +56,7 @@ Examples
 
 **[parallel]** - Number of threads. 3-4 is recommended
 
-### Filename Output
+### Filename Generation
 The script will try to create a logical filename that includes the prefix, recording date, title, location and other details when available. Here are some examples of generated titles:
 
 - 2016-12-10_DOR_Initiation-Lecture-Eng-by-HH-Kadamba-Kanana-Swami-Maharaj-on-10th-Dec-2016-Melbourne-Australia_HARE-KRISHNA-MELBOURNE-ISKCON-TEMPLE.mp3
@@ -67,9 +69,17 @@ The script will try to create a logical filename that includes the prefix, recor
 
 ## Filename Format
 
-[YYYY-MM-DD]_PREFIX_Title_Location.ext
+```[YYYY-MM-DD]_PREFIX_Title_Location.ext```
 
-Date only included if confidently extracted.
+The date will only be included if a recording date can be generated from the title.
+
+## CSV file
+A csv file will be logged automatically and it includes these columns:
+- recording date
+- title
+- channel name (for copyright permissions)
+- original link to YT video
+- Download status (failed/completed)
 
 ## Archive System
 
@@ -78,11 +88,8 @@ Date only included if confidently extracted.
 
 Used to skip already downloaded videos.
 
-
-## Parallel Downloads
-
-Recommended:
-- 3–4
+## Parallel Threads
+Recommended: 3–4 threads
 
 ---
 
